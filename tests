@@ -1,0 +1,4 @@
+[![CI Status](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/YOUR_REPO/actions)
+[![Latest Release](https://img.shields.io/github/v/release/YOUR_USERNAME/YOUR_REPO?color=green)](https://github.com/YOUR_USERNAME/YOUR_REPO/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
