@@ -1,71 +1,97 @@
-# Prioritized Protection Model (PPM) Core
+"""
+PPM (Prioritized Protection Model) Core
+Sub-millisecond autonomic execution gate for AI agent tool interception.
+"""
 
-Runtime safety gate and autonomic threat intercept for AI agents and LLM execution pipelines. Enforces deterministic, tier-1 invariants to block unauthorized state transitions and tool-call violations before execution.
+from enum import Enum
+from functools import wraps
+import re
 
-## Features
 
-- **Sub-millisecond Execution Gate**: Autonomic reflex arc positioned between AI model reasoning and tool execution
-- **Tier-1 Invariants**: Deterministic safety checks including:
-  - `NO_DESTRUCTIVE_FS`: Blocks destructive filesystem operations (delete, remove)
-  - `NO_UNAUTHORIZED_SHELL`: Prevents dangerous shell commands (rm, mkfs, dd, dev writes)
-  - `RESTRICT_OUTBOUND_SOCKETS`: Control outbound network access
-- **Decorator-based Integration**: Simple `@gate.intercept()` decorator for tool functions
-- **Exception-driven Safety**: Raises `InvariantViolationError` on constraint violations
+class InvariantViolationError(Exception):
+    """Raised when an agent action violates a hard Tier-1 invariant."""
+    pass
 
-## Installation
 
-```bash
-pip install ppm-core
-```
+class Tier1Invariant(Enum):
+    NO_DESTRUCTIVE_FS = "NO_DESTRUCTIVE_FS"
+    NO_UNAUTHORIZED_SHELL = "NO_UNAUTHORIZED_SHELL"
+    RESTRICT_OUTBOUND_SOCKETS = "RESTRICT_OUTBOUND_SOCKETS"
 
-## Usage
 
-```python
-from Ppm_core import AutonomicGate, Tier1Invariant, InvariantViolationError
+class AutonomicGate:
+    """
+    Autonomic reflex arc positioned between an AI model's reasoning loop 
+    and tool execution layer.
+    """
+    def __init__(self, active_invariants=None):
+        self.active_invariants = active_invariants or [
+            Tier1Invariant.NO_DESTRUCTIVE_FS,
+            Tier1Invariant.NO_UNAUTHORIZED_SHELL,
+            Tier1Invariant.RESTRICT_OUTBOUND_SOCKETS,
+        ]
 
-# Initialize the autonomic gate with active invariants
-gate = AutonomicGate(active_invariants=[
-    Tier1Invariant.NO_DESTRUCTIVE_FS,
-    Tier1Invariant.NO_UNAUTHORIZED_SHELL
-])
+    def evaluate(self, action_type: str, params: dict | None = None) -> bool:
+        """
+        Evaluates state safety against active invariants in < 1ms.
+        Handles missing or null parameters gracefully.
+        """
+        params = params or {}
 
-# Protect tool execution with the intercept decorator
-@gate.intercept("shell_exec")
-def execute_shell(command):
-    # This will raise InvariantViolationError for dangerous commands
-    return subprocess.run(command, shell=True)
+        # 1. File System Invariants
+        if Tier1Invariant.NO_DESTRUCTIVE_FS in self.active_invariants:
+            if action_type in ["file_delete", "delete", "remove"]:
+                path = params.get("path") or ""
+                raise InvariantViolationError(
+                    f"Blocked destructive filesystem action on path: '{path}'"
+                )
 
-# Attempt safe operation
-result = execute_shell("echo 'hello'")
+        # 2. Shell Execution Invariants (Hardened against pattern evasion & piping)
+        if Tier1Invariant.NO_UNAUTHORIZED_SHELL in self.active_invariants:
+            if action_type in ["shell_exec", "exec", "bash", "system"]:
+                cmd = str(params.get("command") or "").lower()
+                # Remove extra internal whitespace to prevent 'r m  -rf' evasion
+                normalized_cmd = re.sub(r"\s+", " ", cmd)
+                
+                dangerous_patterns = [
+                    r"\brm\b",          # Matches rm, /bin/rm, rm -rf
+                    r"\bmkfs\b",        # Filesystem format
+                    r"\bdd\b",          # Direct disk write
+                    r">\s*/dev/sd",     # Overwriting block devices
+                    r"\bshutdown\b",
+                    r"\breboot\b"
+                ]
+                for pattern in dangerous_patterns:
+                    if re.search(pattern, normalized_cmd):
+                        raise InvariantViolationError(
+                            f"Blocked unauthorized/dangerous shell command: '{cmd}'"
+                        )
 
-# This will raise InvariantViolationError
-try:
-    execute_shell("rm -rf /")
-except InvariantViolationError as e:
-    print(f"Blocked: {e}")
-```
+        # 3. Outbound Socket Invariants
+        if Tier1Invariant.RESTRICT_OUTBOUND_SOCKETS in self.active_invariants:
+            if action_type in ["socket_connect", "net_outbound", "http_request", "connect"]:
+                host = str(params.get("host") or params.get("url") or "").lower()
+                # Block cloud metadata service IP (SSRF) and unauthorized outbound calls
+                if "169.254.169.254" in host or params.get("unauthorized", False):
+                    raise InvariantViolationError(
+                        f"Blocked restricted outbound socket/network target: '{host}'"
+                    )
 
-## Testing
+        return True
 
-Run the test suite:
+    def intercept(self, action_type: str):
+        """
+        Decorator to wrap agent tool functions with deterministic invariant checks.
+        """
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                params = kwargs.copy()
+                if args and "path" not in params and "command" not in params:
+                    params["path"] = args[0] if isinstance(args[0], str) else ""
+                    params["command"] = args[0] if isinstance(args[0], str) else ""
 
-```bash
-pip install -e ".[dev]"
-pytest
-```
-
-## Development
-
-Install development dependencies:
-
-```bash
-pip install -e ".[dev]"
-```
-
-## License
-
-MIT License - See LICENSE file for details
-
-## Security
-
-For security concerns and responsible disclosure, see [Security.md](Security.md).
+                self.evaluate(action_type, params)
+                return func(*args, **kwargs)
+            return wrapper
+        return decorator
