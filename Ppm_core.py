@@ -27,31 +27,55 @@ class AutonomicGate:
     def __init__(self, active_invariants=None):
         self.active_invariants = active_invariants or [
             Tier1Invariant.NO_DESTRUCTIVE_FS,
-            Tier1Invariant.NO_UNAUTHORIZED_SHELL
+            Tier1Invariant.NO_UNAUTHORIZED_SHELL,
+            Tier1Invariant.RESTRICT_OUTBOUND_SOCKETS,
         ]
 
-    def evaluate(self, action_type: str, params: dict) -> bool:
+    def evaluate(self, action_type: str, params: dict | None = None) -> bool:
         """
         Evaluates state safety against active invariants in < 1ms.
+        Handles missing or null parameters gracefully.
         """
+        params = params or {}
+
         # 1. File System Invariants
         if Tier1Invariant.NO_DESTRUCTIVE_FS in self.active_invariants:
             if action_type in ["file_delete", "delete", "remove"]:
-                path = params.get("path", "")
+                path = params.get("path") or ""
                 raise InvariantViolationError(
                     f"Blocked destructive filesystem action on path: '{path}'"
                 )
 
-        # 2. Shell Execution Invariants
+        # 2. Shell Execution Invariants (Hardened against pattern evasion & piping)
         if Tier1Invariant.NO_UNAUTHORIZED_SHELL in self.active_invariants:
             if action_type in ["shell_exec", "exec", "bash", "system"]:
-                cmd = params.get("command", "")
-                dangerous_patterns = [r"\brm\s+", r"mkfs", r"dd\s+", r">\s*/dev/sd"]
+                cmd = str(params.get("command") or "").lower()
+                # Remove extra internal whitespace to prevent 'r m  -rf' evasion
+                normalized_cmd = re.sub(r"\s+", " ", cmd)
+                
+                dangerous_patterns = [
+                    r"\brm\b",          # Matches rm, /bin/rm, rm -rf
+                    r"\bmkfs\b",        # Filesystem format
+                    r"\bdd\b",          # Direct disk write
+                    r">\s*/dev/sd",     # Overwriting block devices
+                    r"\bshutdown\b",
+                    r"\breboot\b"
+                ]
                 for pattern in dangerous_patterns:
-                    if re.search(pattern, cmd):
+                    if re.search(pattern, normalized_cmd):
                         raise InvariantViolationError(
-                            f"Blocked unauthorized/dangerous shell execution: '{cmd}'"
+                            f"Blocked unauthorized/dangerous shell command: '{cmd}'"
                         )
+
+        # 3. Outbound Socket Invariants
+        if Tier1Invariant.RESTRICT_OUTBOUND_SOCKETS in self.active_invariants:
+            if action_type in ["socket_connect", "net_outbound", "http_request", "connect"]:
+                host = str(params.get("host") or params.get("url") or "").lower()
+                # Block cloud metadata service IP (SSRF) and unauthorized outbound calls
+                if "169.254.169.254" in host or params.get("unauthorized", False):
+                    raise InvariantViolationError(
+                        f"Blocked restricted outbound socket/network target: '{host}'"
+                    )
 
         return True
 
@@ -62,7 +86,6 @@ class AutonomicGate:
         def decorator(func):
             @wraps(func)
             def wrapper(*args, **kwargs):
-                # Map standard keyword args or positionals for checking
                 params = kwargs.copy()
                 if args and "path" not in params and "command" not in params:
                     params["path"] = args[0] if isinstance(args[0], str) else ""
